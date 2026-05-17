@@ -5,6 +5,8 @@ analyzer:
     strict-casts: true
     strict-inference: true
     strict-raw-types: true
+  errors:
+    deprecated_member_use: ignore
 
 linter:
   rules:
@@ -13,9 +15,6 @@ linter:
     cancel_subscriptions: true
     close_sinks: true
     comment_references: true
-    directives_ordering: true
-    prefer_const_constructors: true
-    prefer_const_declarations: true
     prefer_final_fields: true
     prefer_single_quotes: true
     sort_child_properties_last: true

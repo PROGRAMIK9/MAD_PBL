@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../models/mesh_activity.dart';
+import '../services/offline_map_service.dart';
+import '../services/platform_mesh_bridge.dart';
 import '../services/mesh_store.dart';
 import '../widgets/status_chip.dart';
 import '../widgets/summary_card.dart';
@@ -34,20 +36,17 @@ class DashboardScreen extends StatelessWidget {
                     ),
                   ),
                   padding: const EdgeInsets.fromLTRB(20, 72, 20, 24),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: <Widget>[
-                      const StatusChip(label: 'Offline relay active', color: Color(0xFF43D6A7), icon: Icons.sensors),
-                      const SizedBox(height: 14),
-                      Text(
-                        'Mesh links keep the network alive when towers go down.',
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w700,
-                            ),
-                      ),
-                    ],
+                  child: Align(
+                    alignment: Alignment.bottomLeft,
+                    child: Text(
+                      'Mesh links keep the network alive when towers go down.',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
                   ),
                 ),
               ),
@@ -105,6 +104,11 @@ class DashboardScreen extends StatelessWidget {
                           accent: const Color(0xFFFB7185),
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 20),
+                    _IntegrationCard(
+                      platformBridge: PlatformMeshBridge(),
+                      mapService: const OfflineMapService(),
                     ),
                     const SizedBox(height: 20),
                     _PanelCard(
@@ -244,6 +248,78 @@ class _ActivityTile extends StatelessWidget {
           ),
           Text(time, style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Colors.white54)),
         ],
+      ),
+    );
+  }
+}
+
+class _IntegrationCard extends StatefulWidget {
+  const _IntegrationCard({required this.platformBridge, required this.mapService});
+
+  final PlatformMeshBridge platformBridge;
+  final OfflineMapService mapService;
+
+  @override
+  State<_IntegrationCard> createState() => _IntegrationCardState();
+}
+
+class _IntegrationCardState extends State<_IntegrationCard> {
+  late final Future<MeshPlatformSnapshot> _platformSnapshotFuture = widget.platformBridge.snapshot();
+
+  @override
+  Widget build(BuildContext context) {
+    final OfflineMapStatus mapStatus = widget.mapService.current();
+
+    return _PanelCard(
+      title: 'Platform integrations',
+      subtitle: 'Native services and offline map readiness',
+      child: FutureBuilder<MeshPlatformSnapshot>(
+        future: _platformSnapshotFuture,
+        builder: (BuildContext context, AsyncSnapshot<MeshPlatformSnapshot> snapshot) {
+          final MeshPlatformSnapshot fallback = snapshot.data ?? const MeshPlatformSnapshot(
+            bluetoothAvailable: false,
+            wifiDirectAvailable: false,
+            offlineMapsAvailable: true,
+            platformLabel: 'loading',
+          );
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: <Widget>[
+                  StatusChip(
+                    label: 'Platform: ${fallback.platformLabel}',
+                    color: const Color(0xFF4D9EFF),
+                    icon: Icons.devices,
+                  ),
+                  StatusChip(
+                    label: fallback.bluetoothAvailable ? 'Bluetooth ready' : 'Bluetooth fallback',
+                    color: fallback.bluetoothAvailable ? const Color(0xFF43D6A7) : const Color(0xFFFFC857),
+                    icon: Icons.bluetooth,
+                  ),
+                  StatusChip(
+                    label: fallback.wifiDirectAvailable ? 'Wi-Fi Direct ready' : 'Wi-Fi Direct fallback',
+                    color: fallback.wifiDirectAvailable ? const Color(0xFF43D6A7) : const Color(0xFFFFC857),
+                    icon: Icons.wifi,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Text(
+                '${mapStatus.providerLabel} • ${mapStatus.downloadedRegion} • ${mapStatus.tilesCached} cached tiles',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white70),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                widget.mapService.tileStrategy(),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white60),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
