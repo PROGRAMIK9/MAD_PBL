@@ -93,6 +93,26 @@ class MainActivity : FlutterActivity() {
         result.success(null)
       }
       "broadcastEmergency" -> result.success(null)
+      "wifidirectConnect" -> {
+        val addr = call.arguments as? String
+        if (addr != null) {
+          wifiDirectService?.connectToDevice(addr)
+          result.success(null)
+        } else {
+          result.error("invalid_args", "Expected device address", null)
+        }
+      }
+      "wifidirectSend" -> {
+        val args = call.arguments as? Map<*, *>
+        val addr = args?.get("address") as? String
+        val payload = args?.get("payload") as? String
+        if (addr != null && payload != null) {
+          wifiDirectService?.sendMessageTo(addr, 8988, payload)
+          result.success(null)
+        } else {
+          result.error("invalid_args", "Expected address and payload", null)
+        }
+      }
       "shareLocationPacket" -> result.success(null)
       else -> result.notImplemented()
     }
