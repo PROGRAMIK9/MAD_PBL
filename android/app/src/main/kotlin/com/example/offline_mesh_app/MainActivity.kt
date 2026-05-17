@@ -36,7 +36,18 @@ class MainActivity : FlutterActivity() {
     wifiDirectService = WifiDirectService(this)
 
     MethodChannel(flutterEngine.dartExecutor.binaryMessenger, methodChannelName).setMethodCallHandler { call, result ->
-      handleMethodCall(call, result, controller)
+      when (call.method) {
+        "setSymmetricKey" -> {
+          val keyB64 = call.arguments as? String
+          if (keyB64 != null) {
+            CryptoHelper.setKeyBase64(keyB64)
+            result.success(null)
+          } else {
+            result.error("invalid_args", "Expected base64 key string", null)
+          }
+        }
+        else -> handleMethodCall(call, result, controller)
+      }
     }
 
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, discoveryChannelName).setStreamHandler(object : EventChannel.StreamHandler {
