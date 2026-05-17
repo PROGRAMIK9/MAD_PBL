@@ -93,15 +93,7 @@ class WifiDirectService(private val context: Context) {
                 val server = java.net.ServerSocket(port)
                 while (!Thread.currentThread().isInterrupted) {
                     val client = server.accept()
-                    // Read a simple length-prefixed message
-                    val input = client.getInputStream()
-                    val buf = ByteArray(4096)
-                    val read = input.read(buf)
-                    if (read > 0) {
-                        val payload = String(buf, 0, read)
-                        eventSink?.success(mapOf("type" to "wifidirect_message", "payload" to payload))
-                    }
-                    client.close()
+                    handleAcceptedSocket(client)
                 }
                 server.close()
             } catch (e: Exception) {
@@ -118,15 +110,75 @@ class WifiDirectService(private val context: Context) {
 
     fun sendMessageTo(address: String, port: Int = 8988, message: String) {
         Thread {
+            var attempts = 0
+            var backoff = 200L
+            val maxAttempts = 4
+            while (attempts < maxAttempts) {
+                try {
+                    val sock = java.net.Socket(address, port)
+                    val out = sock.getOutputStream()
+                    // Encrypt
+                    val ciphertext = CryptoHelper.encrypt(message.toByteArray()) ?: throw Exception("encryption_key_missing")
+                    // Frame: 4-byte big-endian length + payload
+                    val len = ciphertext.size
+                    val header = byteArrayOf(
+                        ((len shr 24) and 0xFF).toByte(),
+                        ((len shr 16) and 0xFF).toByte(),
+                        ((len shr 8) and 0xFF).toByte(),
+                        (len and 0xFF).toByte()
+                    )
+                    out.write(header)
+                    out.write(ciphertext)
+                    out.flush()
+                    sock.close()
+                    eventSink?.success(mapOf("type" to "wifidirect_send", "status" to "sent", "to" to address))
+                    break
+                } catch (e: Exception) {
+                    attempts += 1
+                    if (attempts >= maxAttempts) {
+                        eventSink?.error("send_error", e.message, null)
+                        break
+                    }
+                    try {
+                        Thread.sleep(backoff)
+                    } catch (ie: InterruptedException) {
+                        break
+                    }
+                    backoff *= 2
+                }
+            }
+        }.start()
+    }
+
+    // Read framed+encrypted payloads from an accepted socket
+    private fun handleAcceptedSocket(client: java.net.Socket) {
+        Thread {
             try {
-                val sock = java.net.Socket(address, port)
-                val out = sock.getOutputStream()
-                out.write(message.toByteArray())
-                out.flush()
-                sock.close()
-                eventSink?.success(mapOf("type" to "wifidirect_send", "status" to "sent", "to" to address))
+                val input = client.getInputStream()
+                val header = ByteArray(4)
+                while (true) {
+                    var read = input.read(header)
+                    if (read != 4) break
+                    val len = ((header[0].toInt() and 0xFF) shl 24) or
+                            ((header[1].toInt() and 0xFF) shl 16) or
+                            ((header[2].toInt() and 0xFF) shl 8) or
+                            (header[3].toInt() and 0xFF)
+                    val buf = ByteArray(len)
+                    var offset = 0
+                    while (offset < len) {
+                        val r = input.read(buf, offset, len - offset)
+                        if (r <= 0) break
+                        offset += r
+                    }
+                    val plaintext = CryptoHelper.decrypt(buf)
+                    if (plaintext != null) {
+                        val payload = String(plaintext)
+                        eventSink?.success(mapOf("type" to "wifidirect_message", "payload" to payload))
+                    }
+                }
+                client.close()
             } catch (e: Exception) {
-                eventSink?.error("send_error", e.message, null)
+                eventSink?.error("receive_error", e.message, null)
             }
         }.start()
     }
