@@ -37,3 +37,6 @@ Run `flutter create .` in this folder, then add the generated Android and iOS pl
 - Android signing example: `android/key.properties.example`
 - iOS signing notes: `ios/Flutter/Signing.xcconfig`
 - Native platform bridge: `android/app/src/main/kotlin/com/example/offline_mesh_app/MainActivity.kt` and `ios/Runner/AppDelegate.swift`
+- Android release checklist: `docs/android-signing-checklist.md`
+- iOS release checklist: `docs/ios-signing-checklist.md`
+- Android keystore generator: `scripts/create_android_keystore.ps1`
