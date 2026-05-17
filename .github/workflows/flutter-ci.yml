@@ -30,6 +30,12 @@ jobs:
 
       - name: Build Windows release
         run: flutter build windows --release
+        - name: Build Android release (placeholder)
+          if: runner.os == 'Windows' || runner.os == 'Linux'
+          run: |
+            echo "Preparing Android release build (placeholder). Configure Android SDK and signing in CI before enabling."
+            # To enable Android release builds, set up ANDROID_SDK_ROOT and signing env vars, then run:
+            # ./gradlew assembleRelease -p android
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4

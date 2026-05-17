@@ -55,4 +55,13 @@ Run the app on an Android device with Bluetooth permissions enabled to see live 
 - Integrate Mapbox offline SDK on each platform and wire `OfflineMapService` to native implementations.
 - Complete end-to-end encrypted packet relay and routing across devices (store-and-forward + dedupe + TTL).
 
+## What I completed in this run
+
+- Added Android AES‑GCM `CryptoHelper` and framed/encrypted Wi‑Fi Direct relay with retries.
+- Added iOS BLE discovery and scaffold for background relay; wired discovery EventChannel.
+- Added Mapbox native scaffolds (`MapboxService.kt`, `MapboxService.swift`) and updated `OfflineMapService` bridge.
+- Added CI placeholder step for Android release build in `.github/workflows/flutter-ci.yml` and `docs/signing-and-provisioning.md`.
+
+See `docs/signing-and-provisioning.md` for next steps to produce signed release artifacts.
+
 If you want, I can continue implementing iOS BLE and Wi‑Fi Direct, but I will need an Apple/macOS environment and device testing access.
