@@ -10,3 +10,8 @@
 - Android: create a keystore and configure `android/key.properties` plus Gradle signing config.
 - iOS: configure signing in Xcode with a team, bundle identifier, and provisioning profile.
 - Store signing secrets in CI secret storage and never commit them.
+
+## Live mesh status
+
+- Android: live Bluetooth LE discovery is implemented in the native entrypoint.
+- iOS: the app returns real battery state and platform status, with discovery scaffolding ready for a native CoreBluetooth implementation.

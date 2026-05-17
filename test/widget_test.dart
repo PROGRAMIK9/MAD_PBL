@@ -11,7 +11,7 @@ void main() {
     await tester.pumpWidget(MeshAppRoot(store: store));
     await tester.pumpAndSettle();
 
-    expect(find.text('Rescue Mesh'), findsWidgets);
+    expect(find.textContaining('Offline Mesh'), findsWidgets);
     expect(find.text('Status'), findsOneWidget);
     expect(find.text('Chat'), findsOneWidget);
 

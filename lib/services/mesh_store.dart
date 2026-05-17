@@ -8,28 +8,29 @@ import '../models/mesh_link.dart';
 import '../models/mesh_location.dart';
 import '../models/mesh_message.dart';
 import '../models/mesh_peer.dart';
+import 'platform_mesh_bridge.dart';
 
 class MeshStore extends ChangeNotifier {
-  MeshStore() {
-    _seed();
-    _timer = Timer.periodic(const Duration(seconds: 3), (_) => _tick());
+  MeshStore({PlatformMeshBridge? platformBridge}) : _platformBridge = platformBridge ?? PlatformMeshBridge() {
+    unawaited(_bootstrap());
   }
 
   final Random _random = Random();
+  final PlatformMeshBridge _platformBridge;
+  StreamSubscription<MeshDiscoverySnapshot>? _discoverySubscription;
+
   final String localNodeId = 'node-local-01';
   final String localNodeName = 'Field Hub';
   final String passphraseHint = '32-character mesh key';
 
-  late final Timer _timer;
-
   bool meshEnabled = true;
   bool disasterMode = true;
   bool locationSharing = true;
-  double batteryLevel = 78;
-  double offlineSignal = 91;
-  String networkLabel = 'Rescue Mesh';
-  String coverageLabel = '12 nearby nodes';
-  String syncState = 'Relaying packets locally';
+  double batteryLevel = 0;
+  double offlineSignal = 0;
+  String networkLabel = 'Offline Mesh';
+  String coverageLabel = 'Starting live discovery';
+  String syncState = 'Waiting for Bluetooth discovery';
 
   final List<MeshPeer> _peers = <MeshPeer>[];
   final List<MeshMessage> _messages = <MeshMessage>[];
@@ -43,7 +44,7 @@ class MeshStore extends ChangeNotifier {
   List<MeshLocation> get locations => List<MeshLocation>.unmodifiable(_locations);
   List<MeshLink> get links => List<MeshLink>.unmodifiable(_links);
 
-  int get activePeers => _peers.where((MeshPeer peer) => peer.signalStrength > 30).length;
+  int get activePeers => _peers.length;
 
   int get relayNodes => _peers.where((MeshPeer peer) => peer.role == MeshPeerRole.relay).length;
 
@@ -60,10 +61,24 @@ class MeshStore extends ChangeNotifier {
 
   int get acknowledgedMessages => _messages.where((MeshMessage message) => message.acknowledged).length;
 
+  Future<void> _bootstrap() async {
+    final MeshPlatformSnapshot snapshot = await _platformBridge.snapshot();
+    _applySnapshot(snapshot);
+    if (meshEnabled) {
+      await _startDiscovery();
+    }
+  }
+
   void toggleMesh() {
     meshEnabled = !meshEnabled;
-    syncState = meshEnabled ? 'Mesh resumed across nearby devices' : 'Mesh paused locally';
-    _addActivity('Mesh ${meshEnabled ? 'enabled' : 'paused'}', 'Network control updated from the dashboard', 'control');
+    if (meshEnabled) {
+      unawaited(_startDiscovery());
+      syncState = 'Mesh discovery resumed';
+    } else {
+      unawaited(_stopDiscovery());
+      syncState = 'Mesh discovery paused';
+    }
+    _addActivity('Mesh ${meshEnabled ? 'enabled' : 'paused'}', 'Live discovery control updated', 'control');
     notifyListeners();
   }
 
@@ -75,7 +90,8 @@ class MeshStore extends ChangeNotifier {
   }
 
   void sendText(String text) {
-    if (text.trim().isEmpty) {
+    final String body = text.trim();
+    if (body.isEmpty) {
       return;
     }
     _appendMessage(
@@ -85,39 +101,38 @@ class MeshStore extends ChangeNotifier {
         senderName: localNodeName,
         type: MeshMessageType.text,
         priority: MeshMessagePriority.normal,
-        body: text.trim(),
+        body: body,
         createdAt: DateTime.now(),
         ttl: 8,
         hops: 0,
-        route: _buildRoute(),
+        route: _buildRouteLabels(),
         encrypted: true,
         acknowledged: false,
         metadata: <String, dynamic>{'channel': 'text'},
       ),
-      'Text message queued for local relays',
+      'Text message queued locally',
     );
   }
 
   void sendEmergency(String text) {
     final String content = text.trim().isEmpty ? 'Emergency alert from $localNodeName' : text.trim();
-    _appendMessage(
-      MeshMessage(
-        id: _newId('emg'),
-        senderId: localNodeId,
-        senderName: localNodeName,
-        type: MeshMessageType.emergency,
-        priority: MeshMessagePriority.critical,
-        body: content,
-        createdAt: DateTime.now(),
-        ttl: 18,
-        hops: 0,
-        route: _buildEmergencyRoute(),
-        encrypted: true,
-        acknowledged: false,
-        metadata: <String, dynamic>{'priorityRouting': true, 'broadcastRepeat': 3},
-      ),
-      'Emergency broadcast pushed to nearby relays',
+    final MeshMessage message = MeshMessage(
+      id: _newId('emg'),
+      senderId: localNodeId,
+      senderName: localNodeName,
+      type: MeshMessageType.emergency,
+      priority: MeshMessagePriority.critical,
+      body: content,
+      createdAt: DateTime.now(),
+      ttl: 18,
+      hops: 0,
+      route: _buildRouteLabels(),
+      encrypted: true,
+      acknowledged: false,
+      metadata: <String, dynamic>{'priorityRouting': true, 'broadcastRepeat': 3},
     );
+    _appendMessage(message, 'Emergency alert queued for broadcast');
+    unawaited(_platformBridge.broadcastEmergency(message.id));
   }
 
   void shareLocation(String label, double latitude, double longitude) {
@@ -132,24 +147,23 @@ class MeshStore extends ChangeNotifier {
       ),
     );
 
-    _appendMessage(
-      MeshMessage(
-        id: _newId('loc'),
-        senderId: localNodeId,
-        senderName: localNodeName,
-        type: MeshMessageType.location,
-        priority: MeshMessagePriority.elevated,
-        body: '$label at ${latitude.toStringAsFixed(4)}, ${longitude.toStringAsFixed(4)}',
-        createdAt: DateTime.now(),
-        ttl: 12,
-        hops: 0,
-        route: _buildRoute(),
-        encrypted: true,
-        acknowledged: false,
-        metadata: <String, dynamic>{'latitude': latitude, 'longitude': longitude, 'label': label},
-      ),
-      'Location marker relayed offline',
+    final MeshMessage message = MeshMessage(
+      id: _newId('loc'),
+      senderId: localNodeId,
+      senderName: localNodeName,
+      type: MeshMessageType.location,
+      priority: MeshMessagePriority.elevated,
+      body: '$label at ${latitude.toStringAsFixed(4)}, ${longitude.toStringAsFixed(4)}',
+      createdAt: DateTime.now(),
+      ttl: 12,
+      hops: 0,
+      route: _buildRouteLabels(),
+      encrypted: true,
+      acknowledged: false,
+      metadata: <String, dynamic>{'latitude': latitude, 'longitude': longitude, 'label': label},
     );
+    _appendMessage(message, 'Location packet queued locally');
+    unawaited(_platformBridge.shareLocationPacket(latitude, longitude));
   }
 
   void injectCompressedImageRelay() {
@@ -164,7 +178,7 @@ class MeshStore extends ChangeNotifier {
         createdAt: DateTime.now(),
         ttl: 10,
         hops: 0,
-        route: _buildRoute(),
+        route: _buildRouteLabels(),
         encrypted: true,
         acknowledged: false,
         metadata: <String, dynamic>{'compression': 'webp', 'sizeHintKb': 128},
@@ -175,143 +189,103 @@ class MeshStore extends ChangeNotifier {
 
   @override
   void dispose() {
-    _timer.cancel();
+    unawaited(_stopDiscovery());
     super.dispose();
   }
 
-  void _seed() {
-    _peers.addAll(<MeshPeer>[
-      MeshPeer.sample(
-        id: 'node-01',
-        name: 'Riya',
-        role: MeshPeerRole.relay,
-        locationLabel: 'Gate 3',
-        signalStrength: 90,
-        batteryLevel: 62,
-        relayStrength: 84,
-      ),
-      MeshPeer.sample(
-        id: 'node-02',
-        name: 'Sam',
-        role: MeshPeerRole.sender,
-        locationLabel: 'Medical Tent',
-        signalStrength: 72,
-        batteryLevel: 54,
-        relayStrength: 60,
-      ),
-      MeshPeer.sample(
-        id: 'node-03',
-        name: 'Asha',
-        role: MeshPeerRole.receiver,
-        locationLabel: 'West Exit',
-        signalStrength: 85,
-        batteryLevel: 71,
-        relayStrength: 75,
-      ),
-      MeshPeer.sample(
-        id: 'node-04',
-        name: 'Omar',
-        role: MeshPeerRole.relay,
-        locationLabel: 'Tower A',
-        signalStrength: 68,
-        batteryLevel: 47,
-        relayStrength: 88,
-      ),
-      MeshPeer.sample(
-        id: 'node-05',
-        name: 'Mina',
-        role: MeshPeerRole.receiver,
-        locationLabel: 'Shelter 2',
-        signalStrength: 58,
-        batteryLevel: 79,
-        relayStrength: 49,
-      ),
-    ]);
+  void _applySnapshot(MeshPlatformSnapshot snapshot) {
+    batteryLevel = snapshot.batteryLevel.toDouble();
+    locationSharing = snapshot.offlineMapsAvailable;
+    networkLabel = 'Offline Mesh • ${snapshot.platformLabel}';
+    syncState = snapshot.bluetoothAvailable ? 'Bluetooth discovery ready' : 'Bluetooth unavailable on this device';
+    coverageLabel = 'Searching for nearby devices';
+    notifyListeners();
+  }
 
-    _messages.addAll(<MeshMessage>[
-      MeshMessage(
-        id: _newId('msg'),
-        senderId: 'node-03',
-        senderName: 'Asha',
-        type: MeshMessageType.text,
-        priority: MeshMessagePriority.normal,
-        body: 'Staying near the west exit until the route opens.',
-        createdAt: DateTime.now().subtract(const Duration(minutes: 4)),
-        ttl: 7,
-        hops: 2,
-        route: <String>['Asha', 'Omar', 'Field Hub'],
-        encrypted: true,
-        acknowledged: true,
-        metadata: <String, dynamic>{'channel': 'chat'},
-      ),
-      MeshMessage(
-        id: _newId('emg'),
-        senderId: 'node-02',
-        senderName: 'Sam',
-        type: MeshMessageType.emergency,
-        priority: MeshMessagePriority.critical,
-        body: 'Possible blockage near Gate 3. Need clear relay path.',
-        createdAt: DateTime.now().subtract(const Duration(minutes: 2)),
-        ttl: 15,
-        hops: 3,
-        route: <String>['Sam', 'Riya', 'Omar', 'Field Hub'],
-        encrypted: true,
-        acknowledged: false,
-        metadata: <String, dynamic>{'priorityRouting': true},
-      ),
-    ]);
+  Future<void> _startDiscovery() async {
+    try {
+      await _platformBridge.startDiscovery();
+      _discoverySubscription ??= _platformBridge.discoveryStream().listen(
+        _ingestDiscovery,
+        onError: (Object error, StackTrace stackTrace) {
+          _addActivity('Discovery error', error.toString(), 'warning');
+          syncState = 'Discovery error';
+          notifyListeners();
+        },
+      );
+      _addActivity('Discovery started', 'Listening for nearby devices', 'info');
+      syncState = 'Scanning live nearby devices';
+      notifyListeners();
+    } catch (error) {
+      _addActivity('Discovery unavailable', error.toString(), 'warning');
+      syncState = 'Discovery unavailable';
+      notifyListeners();
+    }
+  }
 
-    _activities.addAll(<MeshActivity>[
-      MeshActivity(
-        title: 'Relay path stabilized',
-        subtitle: 'Asha -> Omar -> Field Hub',
-        timestamp: DateTime.now().subtract(const Duration(minutes: 1)),
-        level: 'info',
-      ),
-      MeshActivity(
-        title: 'Emergency packet broadcast',
-        subtitle: 'Gate 3 alert repeated across local relays',
-        timestamp: DateTime.now().subtract(const Duration(minutes: 3)),
-        level: 'critical',
-      ),
-      MeshActivity(
-        title: 'Battery saver engaged',
-        subtitle: 'Bluetooth LE scan interval increased',
-        timestamp: DateTime.now().subtract(const Duration(minutes: 7)),
-        level: 'warning',
-      ),
-    ]);
+  Future<void> _stopDiscovery() async {
+    await _platformBridge.stopDiscovery();
+    await _discoverySubscription?.cancel();
+    _discoverySubscription = null;
+    _peers.clear();
+    _links.clear();
+    coverageLabel = 'Discovery stopped';
+    syncState = 'Mesh paused';
+    notifyListeners();
+  }
 
-    _locations.addAll(<MeshLocation>[
-      const MeshLocation(
-        label: 'Safe Route A',
-        latitude: 40.7121,
-        longitude: -74.0042,
-        kind: MeshLocationKind.safePath,
-        note: 'Low congestion, marked by volunteers',
-      ),
-      const MeshLocation(
-        label: 'Gate 3 Hazard',
-        latitude: 40.7138,
-        longitude: -74.0064,
-        kind: MeshLocationKind.dangerZone,
-        note: 'Debris reported, avoid east lane',
-      ),
-      const MeshLocation(
-        label: 'Rescue Checkpoint',
-        latitude: 40.7145,
-        longitude: -74.0031,
-        kind: MeshLocationKind.rescuePoint,
-        note: 'Ambulance handoff point',
-      ),
-    ]);
+  void _ingestDiscovery(MeshDiscoverySnapshot snapshot) {
+    final double signalStrength = ((snapshot.rssi + 100).clamp(0, 100)).toDouble();
+    final double relayStrength = (signalStrength * 0.8).clamp(0, 100);
+    final MeshPeerRole role = signalStrength >= 70 ? MeshPeerRole.relay : MeshPeerRole.receiver;
+    final MeshPeer peer = MeshPeer(
+      id: snapshot.deviceId,
+      name: snapshot.deviceName,
+      role: role,
+      signalStrength: signalStrength,
+      batteryLevel: 0,
+      lastSeen: DateTime.now(),
+      locationLabel: 'Nearby • ${snapshot.platformLabel}',
+      relayStrength: relayStrength,
+    );
 
+    final bool isNewPeer = _upsertPeer(peer);
+    _recalculateNetworkState();
     _refreshLinks();
+
+    if (isNewPeer) {
+      _addActivity('Device discovered', '${peer.name} • ${snapshot.rssi} dBm', 'info');
+    }
+    syncState = 'Live discovery from ${snapshot.platformLabel}';
+    notifyListeners();
+  }
+
+  bool _upsertPeer(MeshPeer peer) {
+    final int index = _peers.indexWhere((MeshPeer currentPeer) => currentPeer.id == peer.id);
+    if (index == -1) {
+      _peers.insert(0, peer);
+      return true;
+    }
+
+    _peers[index] = peer;
+    return false;
+  }
+
+  void _recalculateNetworkState() {
+    if (_peers.isEmpty) {
+      offlineSignal = 0;
+      coverageLabel = 'No nearby devices yet';
+      return;
+    }
+
+    final double totalSignal = _peers.fold<double>(0, (double sum, MeshPeer peer) => sum + peer.signalStrength);
+    offlineSignal = totalSignal / _peers.length;
+    coverageLabel = '${_peers.length} live nearby devices';
   }
 
   void _appendMessage(MeshMessage message, String activityLabel) {
     _messages.insert(0, message);
-    _addActivity(activityLabel, '${message.routeLabel} • ${message.priority.name}', message.isUrgent ? 'critical' : 'info');
+    _addActivity(activityLabel, '${message.routeLabel.isEmpty ? 'Local' : message.routeLabel} • ${message.priority.name}', message.isUrgent ? 'critical' : 'info');
     _refreshLinks();
     notifyListeners();
   }
@@ -321,16 +295,16 @@ class MeshStore extends ChangeNotifier {
       0,
       MeshActivity(title: title, subtitle: subtitle, timestamp: DateTime.now(), level: level),
     );
-    if (_activities.length > 8) {
+    if (_activities.length > 10) {
       _activities.removeLast();
     }
   }
 
   void _refreshLinks() {
+    final List<String> route = _buildRouteLabels();
     _links
       ..clear()
-      ..addAll(_buildRoute().asMap().entries.map((MapEntry<int, String> entry) {
-        final List<String> route = _buildRoute();
+      ..addAll(route.asMap().entries.map((MapEntry<int, String> entry) {
         final String fromId = entry.key == 0 ? localNodeId : route[entry.key - 1];
         final String toId = route[entry.key];
         final MeshPeer? peer = _peers.cast<MeshPeer?>().firstWhere(
@@ -340,81 +314,17 @@ class MeshStore extends ChangeNotifier {
         return MeshLink(
           fromId: fromId,
           toId: toId,
-          strength: peer?.presenceScore ?? 65,
+          strength: peer?.presenceScore ?? 50,
           active: true,
           label: entry.key == 0 ? 'local uplink' : 'relay hop ${entry.key}',
         );
       }));
   }
 
-  List<String> _buildRoute() {
+  List<String> _buildRouteLabels() {
     final List<MeshPeer> sortedPeers = List<MeshPeer>.of(_peers)
       ..sort((MeshPeer left, MeshPeer right) => right.presenceScore.compareTo(left.presenceScore));
-    return sortedPeers.take(3).map((MeshPeer peer) => peer.id).toList(growable: false);
-  }
-
-  List<String> _buildEmergencyRoute() {
-    final List<String> route = _buildRoute();
-    if (route.length < 3) {
-      return route;
-    }
-    return <String>[route[0], route[1], route[2], route[0]];
-  }
-
-  void _tick() {
-    if (!meshEnabled) {
-      notifyListeners();
-      return;
-    }
-
-    for (int index = 0; index < _peers.length; index += 1) {
-      _peers[index] = _peers[index].jittered(_random);
-    }
-
-    batteryLevel = (batteryLevel - (disasterMode ? 0.3 : 0.6)).clamp(8, 100);
-    offlineSignal = (offlineSignal + (_random.nextDouble() * 8 - 4)).clamp(48, 100);
-    coverageLabel = '${activePeers + 7} nearby nodes';
-    syncState = disasterMode
-        ? 'Energy-optimized relays active across the mesh'
-        : 'Standard sync interval with neighbor discovery';
-
-    for (int index = _messages.length - 1; index >= 0; index -= 1) {
-      final MeshMessage current = _messages[index];
-      final int nextTtl = current.ttl - 1;
-      if (nextTtl <= 0) {
-        _messages.removeAt(index);
-        continue;
-      }
-
-      if (!current.acknowledged && DateTime.now().difference(current.createdAt).inSeconds > 6) {
-        _messages[index] = current.copyWith(
-          ttl: nextTtl,
-          hops: current.hops + 1,
-          acknowledged: current.priority == MeshMessagePriority.critical ? true : current.acknowledged,
-          route: current.route,
-        );
-      } else {
-        _messages[index] = current.copyWith(ttl: nextTtl, hops: current.hops + 1, route: current.route);
-      }
-    }
-
-    if (_random.nextBool()) {
-      _activities.insert(
-        0,
-        MeshActivity(
-          title: 'Neighbor heartbeat updated',
-          subtitle: 'Signal paths refreshed without internet',
-          timestamp: DateTime.now(),
-          level: 'info',
-        ),
-      );
-      if (_activities.length > 8) {
-        _activities.removeLast();
-      }
-    }
-
-    _refreshLinks();
-    notifyListeners();
+    return sortedPeers.take(3).map((MeshPeer peer) => peer.name).toList(growable: false);
   }
 
   String _newId(String prefix) {
