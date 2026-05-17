@@ -280,6 +280,7 @@ class _IntegrationCardState extends State<_IntegrationCard> {
             bluetoothAvailable: false,
             wifiDirectAvailable: false,
             offlineMapsAvailable: true,
+            batteryLevel: 0,
             platformLabel: 'loading',
           );
 
